@@ -2680,11 +2680,21 @@ Configuration ConfigureHostAgent
         Script RestartHostAgents
         {
             SetScript = {
+<<<<<<< HEAD
                 $dnsproxy = get-service DNSProxy -ErrorAction Ignore
                 if ($dnsproxy -ne $null) {
                     Write-Verbose "Stopping DnsProxy service."
                     Stop-Service DnsProxy -Force
                 }
+=======
+                <#Write-Verbose "Restarting NcHostAgent.";
+                Restart-Service NCHostAgent -Force
+            
+                Write-Verbose "Restarting SlbHostAgent.";
+                Restart-Service SlbHostAgent -Force#>
+                
+                # Workaround for DnsProxy
+>>>>>>> 86ad7fc... RS3 changes to remove DNSProxy service from SDNExpress.ps1
 
                 Write-Verbose "Stopping SlbHostAgent service."
                 Stop-Service SlbHostAgent -Force                
@@ -2695,6 +2705,7 @@ Configuration ConfigureHostAgent
                 Start-Service NcHostAgent
                 Write-Verbose "Starting SlbHostAgent service."
                 Start-Service SlbHostAgent
+<<<<<<< HEAD
 
                 if ($dnsproxy -ne $null) {                
                     $i = 0
@@ -2715,7 +2726,10 @@ Configuration ConfigureHostAgent
                         }
                     }   
                 }           
+=======
+>>>>>>> 86ad7fc... RS3 changes to remove DNSProxy service from SDNExpress.ps1
             }
+
             TestScript = {
                 return $false
             }
@@ -2854,68 +2868,26 @@ Configuration ConfigureIDnsProxy
 
                 # Enable firewall rules for DNS proxy service
                 Write-verbose "Enable DNS Proxy Service firewall rule group"
-                Enable-NetFirewallRule -DisplayGroup 'DNS Proxy Service'
+                Enable-NetFirewallRule -DisplayGroup 'DNS Proxy Firewall'
 
-                <#
-                # restart the NC host agent service
-                Write-verbose "Restarting NC host agent service"
-                Restart-Service nchostagent -Force
-
-                # Enable firewall rules for DNS proxy service
-                Write-verbose "Start DnsProxy service and make it automatic"
-                Enable-NetFirewallRule -DisplayGroup 'DNS Proxy Service'
-
-                # Start DnsProxy service and make it automatic
-                Write-verbose "Start DnsProxy service and make it automatic"
-                $dnsProxyService = Get-Service -Name "DnsProxy" 
-                Set-Service -Name "DnsProxy" -StartupType Automatic
-                Restart-Service -Name "DnsProxy" -force
-                #>
-                
-                # Workaround for DnsProxy
-                
-                Write-Verbose "Stopping DnsProxy service."
-                Stop-Service DnsProxy -Force
-                
                 Write-Verbose "Stopping NcHostAgent service."
                 Stop-Service NcHostAgent -Force
 
                 Write-Verbose "Starting NcHostAgent service."
                 Start-Service NcHostAgent
-
-                Write-verbose "Set DnsProxy service startup type to Automatic"
-                Set-Service -Name "DnsProxy" -StartupType Automatic
-
-                $i = 0
-                while ($i -lt 10) {
-                    try {
-                        Start-Sleep -Seconds 10
-                        Write-Verbose "Starting DnsProxy service (Attempt: $i)."
-                        Start-Service DnsProxy -ErrorAction Stop
-                        break
-                    }
-                    catch {
-                        Write-Verbose "DnsProxy service can't be started. Will retry."
-                        $i++
-                        if($i -ge 10) {
-                            Write-Verbose "DnsProxy serivce can't be started after $i attempts. Exception: $_"
-                            throw $_
-                        }
-                    }
-                }
             }
 
             TestScript = {
-                $dnsProxyServiceState = $false;
-                Write-verbose "Get DnsProxy service running state"
-                $dnsProxyService = Get-Service -Name "DnsProxy"
-                $dnsProxyServiceState = ($dnsProxyService.status -eq "Running")
-                return $dnsProxyServiceState            
+                $ncHostAgentState = $false;
+                Write-verbose "Get NCHostAgent service running state"
+                $ncHostAgentState = Get-Service -Name "NcHostAgent"
+                $ncHostAgentState = ($ncHostAgentState.status -eq "Running")
+                return $ncHostAgentState            
             }
 
             GetScript = {
-                Write-verbose "Get DnsProxy service "
-                $dnsProxyService = Get-Service -Name "DnsProxy"
+                Write-verbose "Get NcHostAgent service "
+                $ncHostAgentState = Get-Service -Name "NcHostAgent"
                 return @{ result = $true }
             }
         }

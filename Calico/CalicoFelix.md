@@ -2,7 +2,7 @@
 This guide will walk you through deploying Project Calico in policy-only mode on a Linux/Windows mixed-OS Kubernetes cluster without a cloud provider.
 
 ## Assumptions and Prerequisites ##
-It is assumed that you have followed the <insert link>*Kubernetes On-Premises Deployment From Scratch -- Start to Finish*</insert link> guide and that you have a Kubernetes Linux master and a Windows worker node deployed.
+It is assumed that you have followed the [Kubernetes on Windows](https://docs.microsoft.com/en-us/virtualization/windowscontainers/kubernetes/getting-started-kubernetes-windows) guide and that you have a Kubernetes Linux master and a Windows worker node deployed.
 
 **Note**: The guide will assume a local working directory of `~/kube` for the Linux master setup and a local working directory of `c:\k` for the Windows worker node. If you choose different directories for your Kubernetes deployment, just replace any references to that path as you follow this guide.
 

@@ -1,13 +1,23 @@
 Param(
-    [parameter(Mandatory = $false)] [string] $masterIp,
-    [parameter(Mandatory = $false)] [string] $gateway
+    [parameter(Mandatory = $true)] [string] $masterIp
 )
+
+function
+Get-MgmtDefaultGatewayAddress()
+{
+    $na = Get-NetAdapter | ? Name -Like "vEthernet (Ethernet*"
+    return  (Get-NetRoute -InterfaceAlias $na.ifAlias -DestinationPrefix "0.0.0.0/0").NextHop
+}
 
 function
 Add-RouteToPodCIDR($nicName)
 {
-    $podCIDRs=c:\k\kubectl.exe  --kubeconfig=c:\k\config get nodes -o=custom-columns=Name:.status.nodeInfo.operatingSystem,PODCidr:.spec.podCIDR --no-headers
-    Write-Host "Add-RouteToPodCIDR - available nodes $podCIDRs"
+    while (!$podCIDRs) {
+        Start-Sleep 5
+        $podCIDRs=c:\k\kubectl.exe  --kubeconfig=c:\k\config get nodes -o=custom-columns=Name:.status.nodeInfo.operatingSystem,PODCidr:.spec.podCIDR --no-headers
+        Write-Host "Add-RouteToPodCIDR - available nodes $podCIDRs"
+    }
+
     foreach ($podcidr in $podCIDRs)
     {
         $tmp = $podcidr.Split(" ")
@@ -54,5 +64,7 @@ new-NetRoute -DestinationPrefix $podCIDR -NextHop 0.0.0.0 -InterfaceAlias $na.In
 $route = Get-NetRoute -DestinationPrefix "$masterIp/32" -erroraction Ignore
 if (!$route)
 {
-    New-NetRoute -DestinationPrefix "$masterIp/32" -NextHop $gateway  -InterfaceAlias $na.InterfaceAlias
+    $gateway = Get-MgmtDefaultGatewayAddress
+    Write-Host "Adding a route for $masterIp with NextHop $gateway"
+    New-NetRoute -DestinationPrefix "$masterIp/32" -NextHop $gateway  -InterfaceAlias $na.InterfaceAlias -Verbose
 }

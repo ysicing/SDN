@@ -55,19 +55,11 @@ function Get-HNSActivities
 #########################################################################
 # PolicyLists
 #########################################################################
-function Get-HNSPolicyLists {
+function Get-HNSPolicyList {
     [cmdletbinding()]Param()
     return Invoke-HNSRequest -Type policylists -Method GET
 }
 
-function Get-HnsPolicyList {
-    param
-    (
-        [parameter(Mandatory = $true)] [string] $Id
-    )
-
-    return Invoke-HNSRequest -Method GET -Type policylists -Id $id
-}
 function Remove-HnsPolicyList
 {
     [CmdletBinding()]
@@ -153,38 +145,6 @@ function get-endpointReferences {
 #########################################################################
 # Networks
 #########################################################################
-
-function Get-HNSNetwork
-{
-    param
-    (
-        [parameter(Mandatory=$true)] [string] $Id
-    )
-
-    return Invoke-HNSRequest -Method GET -Type networks -Id $id
-}
-
-function Get-HNSNetworks
-{
-    [cmdletbinding()]Param()
-    return Invoke-HNSRequest -Type networks -Method GET
-}
-
-function Remove-HNSNetwork
-{
-    [CmdletBinding()]
-    param
-    (
-        [parameter(Mandatory=$true,ValueFromPipeline=$True,ValueFromPipelinebyPropertyName=$True)]
-        [Object[]] $InputObjects
-    )
-    begin {$Objects = @()}
-    process {$Objects += $InputObjects; }
-    end {
-        $Objects | foreach {  Invoke-HNSRequest -Method DELETE -Type  networks -Id $_.Id }
-    }
-}
-
 function New-HnsNetwork
 {
     param
@@ -195,10 +155,15 @@ function New-HnsNetwork
         [parameter(Mandatory = $false, Position = 0)]
         [string] $Type,
         [parameter(Mandatory = $false)] [string] $Name,
-        [parameter(Mandatory = $false)] [string] $AddressPrefix,
-        [parameter(Mandatory = $false)] [string] $Gateway,
+        [parameter(Mandatory = $false)] $AddressPrefix,
+        [parameter(Mandatory = $false)] $Gateway,
+        [HashTable[]][parameter(Mandatory=$false)] $SubnetPolicies, #  @(@{VSID = 4096; })
+
+        [parameter(Mandatory = $false)] [switch] $IPv6,
         [parameter(Mandatory = $false)] [string] $DNSServer,
-        [parameter(Mandatory = $false)] [string] $AdapterName
+        [parameter(Mandatory = $false)] [string] $AdapterName,
+        [HashTable][parameter(Mandatory=$false)] $AdditionalParams, #  @ {"ICSFlags" = 0; }
+        [HashTable][parameter(Mandatory=$false)] $NetworkSpecificParams #  @ {"InterfaceConstraint" = ""; }
     )
 
     Begin {
@@ -213,27 +178,51 @@ function New-HnsNetwork
                 }
             }
 
-            if ($AddressPrefix -and  $Gateway) {
-                $netobj += @{
-                    Subnets = @(
-                        @{
-                            AddressPrefix  = $AddressPrefix;
-                            GatewayAddress = $Gateway;
+            # Coalesce prefix/gateway into subnet objects.
+            if ($AddressPrefix) {
+                $subnets += @()
+                $prefixes = @($AddressPrefix)
+                $gateways = @($Gateway)
+
+                $len = $prefixes.length
+                for ($i = 0; $i -lt $len; $i++) {
+                    $subnet = @{ AddressPrefix = $prefixes[$i]; }
+                    if ($i -lt $gateways.length -and $gateways[$i]) {
+                        $subnet += @{ GatewayAddress = $gateways[$i]; }
+
+                        if ($SubnetPolicies) {
+                            $subnet.Policies += $SubnetPolicies
                         }
-                    );
+                    }
+
+                    $subnets += $subnet
                 }
+
+                $netobj += @{ Subnets = $subnets }
             }
 
-            if ($DNSServerName) {
-                $netobj += @{
-                    DNSServerList = $DNSServer
-                }
+            if ($IPv6.IsPresent) {
+                $netobj += @{ IPv6 = $true }
             }
 
             if ($AdapterName) {
+                $netobj += @{ NetworkAdapterName = $AdapterName; }
+            }
+
+            if ($AdditionalParams) {
                 $netobj += @{
-                    NetworkAdapterName = $AdapterName;
+                    AdditionalParams = @{}
                 }
+
+                foreach ($param in $AdditionalParams.Keys) {
+                    $netobj.AdditionalParams += @{
+                        $param = $AdditionalParams[$param];
+                    }
+                }
+            }
+
+            if ($NetworkSpecificParams) {
+                $netobj += $NetworkSpecificParams
             }
 
             $JsonString = ConvertTo-Json $netobj -Depth 10
@@ -241,71 +230,14 @@ function New-HnsNetwork
 
     }
     Process{
-        return Invoke-HNSRequest -Method POST -Type networks -Data $JsonString
+        return Invoke-HnsRequest -Method POST -Type networks -Data $JsonString
     }
 }
+
 
 #########################################################################
 # Endpoints
 #########################################################################
-
-#########################################################################
-
-# Get-HNSEndpointById
-<#
-    .Synopsis
-
-    .Description
-
-    .Parameter Type
-
-#>
-
-function Get-HNSEndpoint
-{
-    param
-    (
-        [parameter(Mandatory=$true)] [string] $Id
-    )
-
-    return Invoke-HNSRequest -Method GET -Type endpoints -Id $id
-}
-
-
-#########################################################################
-
-# Get-HNSEndpoints
-<#
-    .Synopsis
-    Get All HNS Endpoint Objects
-
-    .Description
-
-    .Parameter Type
-
-#>
-
-function Get-HnsEndpoints
-{
-    [cmdletbinding()]Param()
-    return  Invoke-HNSRequest -Type endpoints -Method GET
-}
-
-function Remove-HNSEndpoint
-{
-    param
-    (
-        [parameter(Mandatory = $true, ValueFromPipeline = $True, ValueFromPipelinebyPropertyName = $True)]
-        [Object[]] $InputObjects
-    )
-
-    begin {$objects = @()}
-    process {$Objects += $InputObjects; }
-    end {
-        $Objects | foreach {  Invoke-HNSRequest -Method DELETE -Type endpoints -Id $_.Id  }
-    }
-}
-
 function New-HnsEndpoint
 {
     param
@@ -550,14 +482,8 @@ Export-ModuleMember -Function Get-HNSActivities
 Export-ModuleMember -Function Get-HnsSwitchExtensions
 Export-ModuleMember -Function Set-HnsSwitchExtension
 
-Export-ModuleMember -Function Get-HNSNetworks
-Export-ModuleMember -Function Get-HNSNetwork
-Export-ModuleMember -Function Remove-HNSNetwork
 Export-ModuleMember -Function New-HNSNetwork
 
-Export-ModuleMember -Function Get-HNSEndpoint
-Export-ModuleMember -Function Get-HNSEndpoints
-Export-ModuleMember -Function Remove-HNSEndpoint
 Export-ModuleMember -Function New-HNSEndpoint
 Export-ModuleMember -Function New-HnsRemoteEndpoint
 
@@ -568,7 +494,6 @@ Export-ModuleMember -Function Detach-HNSHostEndpoint
 Export-ModuleMember -Function Detach-HNSVMEndpoint
 Export-ModuleMember -Function Detach-HNSEndpoint
 
-Export-ModuleMember -Function Get-HNSPolicyLists
 Export-ModuleMember -Function Get-HNSPolicyList
 Export-ModuleMember -Function Remove-HnsPolicyList
 Export-ModuleMember -Function New-HnsRoute

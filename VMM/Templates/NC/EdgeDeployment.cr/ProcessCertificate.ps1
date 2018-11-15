@@ -48,6 +48,7 @@ function GenerateSelfSignedCertificate([string] $subjectName)
     $cryptographicProviderName = "Microsoft Base Cryptographic Provider v1.0";
     [int] $privateKeyLength = 1024;
     $sslServerOidString = "1.3.6.1.5.5.7.3.1";
+	$SslNetworkControllerOidString = "1.3.6.1.4.1.311.95.1.1.1";
     [int] $validityPeriodInYear = 5;
 
     $name = new-object -com "X509Enrollment.CX500DistinguishedName.1"
@@ -68,9 +69,12 @@ function GenerateSelfSignedCertificate([string] $subjectName)
 
     #Configure Eku
     $serverauthoid = new-object -com "X509Enrollment.CObjectId.1"
-    $serverauthoid.InitializeFromValue($sslServerOidString)
+	$serverauthoid.InitializeFromValue($sslServerOidString)
+	$networkcontrollerauthoid = new-object -com "X509Enrollment.CObjectId.1"
+	$networkcontrollerauthoid.InitializeFromValue($SslNetworkControllerOidString)
     $ekuoids = new-object -com "X509Enrollment.CObjectIds.1"
     $ekuoids.add($serverauthoid)
+	$ekuoids.add($networkcontrollerauthoid)
     $ekuext = new-object -com "X509Enrollment.CX509ExtensionEnhancedKeyUsage.1"
     $ekuext.InitializeEncode($ekuoids)
 
@@ -109,6 +113,30 @@ function GivePermissionToNetworkService($targetCert)
     $privKeyAcl.AddAccessRule($accessRule) 
     Set-Acl $privKeyCertFile.FullName $privKeyAcl
 }
+
+#------------------------------------------
+# Get the Certificate Chain based on below logic
+# Find certificate havinf Network Controller EKU OID 1.3.6.1.4.1.311.95.1.1.1 and fqdn as subject name
+# Prefer certificates that have a longer validity period (the expiration date is later.)
+# If multiple certificates have same expiration date, prefer certificates that were issued more recently.
+# If there is a tie, prefer shorter chains.
+# If certificate with EKU OID not found then go for subject name
+#------------------------------------------
+Function GetCertChain
+{
+$hostFqdn = [System.Net.Dns]::GetHostByName(($env:computerName)).HostName;
+$certSubjectName = "CN="+$hostFqdn;
+try
+{
+	[Reflection.Assembly]::LoadFile("C:\Program Files\Microsoft System Center\Virtual Machine Manager Guest Agent\bin\GuestAgent.Common.dll") | Out-Null
+	[Microsoft.VirtualManager.GuestAgent.Common.CertUtils]::CertificateChain($certSubjectName)
+}
+catch
+{
+	Log "Failed to get cert Chain.  Find certificates on the basis of subject name."
+}
+}
+    
 
 #------------------------------------------
 # Adds the certificate at the given path to the local machine into the specified store.
@@ -152,6 +180,26 @@ Function GetSubjectFqdnFromCertificate([System.Security.Cryptography.X509Certifi
     return $subjectFqdn;
 }
 
+Function SetEncapOverheadPropertyOnNic($nic)
+{
+    #This is a default value that needs to be set as per SDN Express. For more explanation get in touch with platform team.
+	$propValue = 160 
+	$nicProperty = Get-NetAdapterAdvancedProperty -Name $nic.Name -AllProperties -RegistryKeyword *EncapOverhead -ErrorAction Ignore
+    if($nicProperty -eq $null)
+    {
+       Log "The Encap Overhead property has not been added to the Nic yet. Adding the property setting";
+       New-NetAdapterAdvancedProperty -Name $nic.Name -RegistryKeyword *EncapOverhead -RegistryValue $propValue
+       Log "Added the Encap Overhead property to the Nic";
+    }
+    else
+    {
+	   $currentValue = $nicProperty.ValueData;
+       Log "The Encap Overhead property has been added to the Nic. $currentValue. Setting it to the correct value";
+       Set-NetAdapterAdvancedProperty -Name $nic.Name -AllProperties -RegistryKeyword *EncapOverhead -RegistryValue $propValue 
+       Log "Changed the EncapOverhead property value";
+    }
+}
+
 #$VerbosePreference = "Continue";
 # For non-terminating errors force execution to stop and throw an exception
 $ErrorActionPreference = "Stop";
@@ -161,6 +209,7 @@ $gpUpdateSleepSec = 5 * 60
 
 $certName = GetSubjectName($UseManagementAddress);
 $certName = $certName.ToLower()
+$certSubjectName = "CN="+$certName
 $folderPath = 'C:\Temp\'
 $certPath = $folderPath + $certName + '.cer'
 
@@ -178,28 +227,21 @@ if (!([System.Boolean]::TryParse($selfSignedSetup, [ref] $selfSigned)))
 if ($selfSigned)
 {
     Log "Creating self signed certificate if not exists...";
+	
+	# Check if certificate with Oid Exist or not
+	$certThumbprint = GetCertChain
+    $cert = Get-ChildItem -Path Cert:\LocalMachine\My | Where { $_.Thumbprint -eq $certThumbprint }
 
-    $cert = $null
-    $certServerUsageCount = 0
-    $certs = Get-ChildItem -Path Cert:\LocalMachine\My | Where {$_.Subject.ToLower().Contains($certName) -and $_.Issuer.ToLower().Contains($certName)}
+	if ($cert -eq $null)
+	{
+		Log "certificate with NC Oid does not exists... Looking with subject Name";
+		$certs = Get-ChildItem -Path Cert:\LocalMachine\My | Where {$_.Subject.ToLower() -eq $certSubjectName.ToLower() -and $_.Issuer.ToLower().Contains($certName)}
+		if($certs -ne $null)
+		{
+			$cert = $certs[0];
+		}
 
-    foreach ($c in $certs)
-    {
-        foreach ($usage in $c.EnhancedKeyUsageList)
-        {
-            if ($usage.ObjectId -eq "1.3.6.1.5.5.7.3.1")
-            {
-                $cert = $c
-                $certServerUsageCount ++
-            }
-        }
-    }
-
-    if ($certServerUsageCount -gt 1)
-    {
-        Log "More than one certificate with ServerAuthentication usage found."
-        Exit $ErrorCode_Failed;
-    }
+	}
 
     if ($cert -eq $null)
     {
@@ -207,8 +249,31 @@ if ($selfSigned)
 	
         #New-SelfSignedCertificate -DnsName $certName -CertStoreLocation Cert:LocalMachine\My
         GenerateSelfSignedCertificate $certName;
-        $cert = Get-ChildItem -Path Cert:\LocalMachine\My | Where {$_.Subject.ToLower().Contains($certName) -and $_.Issuer.ToLower().Contains($certName)}
-    }
+		Start-Sleep -Seconds 180
+		# Add the self signed certifictate to trusted root store
+		$certificates = Get-ChildItem -Path Cert:\LocalMachine\My | Where {$_.Subject.ToLower() -eq $certSubjectName.ToLower() -and $_.Issuer.ToLower().Contains($certName)}
+		foreach ($c in $certificates)
+		{
+			$store = new-object System.Security.Cryptography.X509Certificates.X509Store("ROOT", "LocalMachine")
+			$store.open("MaxAllowed")
+			$store.add($c)
+			$store.close()
+		}    	
+		# Check if certificate with Oid Exist or not
+		$certThumbprint = GetCertChain
+		$cert = Get-ChildItem -Path Cert:\LocalMachine\My | Where { $_.Thumbprint -eq $certThumbprint }
+
+	    if ($cert -eq $null)
+		{
+			Log "certificate with NC Oid does not exists... Looking with subject Name";
+			$certs = Get-ChildItem -Path Cert:\LocalMachine\My | Where {$_.Subject.ToLower() -eq $certSubjectName.ToLower() -and $_.Issuer.ToLower().Contains($certName)}
+			if($certs -ne $null)
+			{
+				$cert = $certs[0];
+			}
+		}
+		   
+	}
 
     if ($cert -eq $null) 
     {
@@ -222,34 +287,31 @@ else
 
     $certName = (Get-WmiObject win32_computersystem).DNSHostName+"."+(Get-WmiObject win32_computersystem).Domain
     $certName = $certName.ToLower()
-    $cert = $null
-    $certServerUsageCount = 0
 
     for ($i = 0; $i -lt $gpUpdateCount; $i ++)
     {
-        $certs = Get-ChildItem -Path Cert:\LocalMachine\My
+        $certThumbprint = GetCertChain
+		$cert = Get-ChildItem -Path Cert:\LocalMachine\My | Where { $_.Thumbprint -eq $certThumbprint }
 
-        foreach ($c in $certs)
-        {
-            foreach ($usage in $c.EnhancedKeyUsageList)
-            {
-                if ($usage.ObjectId -eq "1.3.6.1.5.5.7.3.1")
-                {
-                    $cert = $c
-                    $certServerUsageCount ++
-                }
-            }
-        }
-        if ($cert -ne $null)
-        {
-            break
-        }
+		 if ($cert -ne $null) 
+		 {
+			break
+		 }
 
         GPUpdate
         Start-Sleep -Seconds $gpUpdateSleepSec
     }
 
     if ($cert -eq $null) 
+    {
+			Log "certificate with NC Oid does not exists... Looking with subject Name";
+			$certs = Get-ChildItem -Path Cert:\LocalMachine\My | Where {$_.Subject.ToLower() -eq $certSubjectName.ToLower()}
+			if($certs -ne $null)
+			{
+				$cert = $certs[0];
+			}
+    }
+	if ($cert -eq $null) 
     {
         Log "CA Certificate cannot be located."
         Exit $ErrorCode_Failed;
@@ -296,7 +358,7 @@ try
     for ($i = 1; $i -lt $certCount; $i ++)
     {
         Remove-ItemProperty -Path "HKLM:\Software\Microsoft\Virtual Machine\Guest" -Name $('GuestCert' + $i) -ErrorAction Ignore
-        New-ItemProperty -Path "HKLM:\Software\Microsoft\Virtual Machine\Guest" -Name $('GuestCert' + $i) -PropertyType String -Value $base64.Substring($i - 1, $i * 1000)
+        New-ItemProperty -Path "HKLM:\Software\Microsoft\Virtual Machine\Guest" -Name $('GuestCert' + $i) -PropertyType String -Value $base64.Substring(($i - 1)*1000, 1000)
     }
     Remove-ItemProperty -Path "HKLM:\Software\Microsoft\Virtual Machine\Guest" -Name $('GuestCert' + $certCount) -ErrorAction Ignore
     New-ItemProperty -Path "HKLM:\Software\Microsoft\Virtual Machine\Guest" -Name $('GuestCert' + $certCount) -PropertyType String -Value $base64.Substring(($certCount - 1) * 1000)
@@ -358,6 +420,28 @@ try
     Log "Setting slbmux service to autostart"
     Set-Service $muxService -StartupType Automatic
 
+}
+catch
+{
+   Log "Caught an exception:";
+   Log "    Exception Type: $($_.Exception.GetType().FullName)";
+   Log "    Exception Message: $($_.Exception.Message)";
+   Log "    Exception HResult: $($_.Exception.HResult)";
+   Exit $ErrorCode_Failed;
+}
+
+try
+{
+    Log "Set Encap Over head on backend nic which is disconnected";
+    $adapters = @(get-netadapter | where { $_.Status -eq "Disconnected"});
+    if($adapters -ne $null )
+    {
+        foreach($adapter in $adapters)
+        {
+            Log "Found the back end Nic Setting Encap Overhead on the nic";
+            SetEncapOverheadPropertyOnNic($adapter);
+        }
+    }
 }
 catch
 {
